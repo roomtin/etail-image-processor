@@ -12,7 +12,8 @@ use rfd::{FileDialog, MessageButtons, MessageDialog, MessageDialogResult, Messag
 use crate::core;
 use crate::csv_io;
 
-const DEFAULT_UNC_BASE: &str = r"\\etail.rs\files\hardwaretools\Images2\Images_Uploaded_3_18_26";
+const UNC_BASE_PREFIX: &str = r"\\etail.rs\files\hardwaretools\Images2\Images_Uploaded_";
+const INSTRUCTION_TEXT: &str = "Select inputs, then click Run.";
 
 pub fn run() -> iced::Result {
     ImageProcessorApp::run(Settings::default())
@@ -30,7 +31,6 @@ enum Message {
 
 #[derive(Debug, Clone, Copy)]
 enum StatusLevel {
-    Info,
     Success,
     Warning,
     Error,
@@ -43,13 +43,6 @@ struct AppStatus {
 }
 
 impl AppStatus {
-    fn info(text: impl Into<String>) -> Self {
-        Self {
-            level: StatusLevel::Info,
-            text: text.into(),
-        }
-    }
-
     fn success(text: impl Into<String>) -> Self {
         Self {
             level: StatusLevel::Success,
@@ -76,7 +69,7 @@ struct ImageProcessorApp {
     image_folder: String,
     output_folder: String,
     unc_base: String,
-    status: AppStatus,
+    status: Option<AppStatus>,
     colors: AppColors,
 }
 
@@ -101,8 +94,8 @@ impl Application for ImageProcessorApp {
             Self {
                 image_folder: String::new(),
                 output_folder: String::new(),
-                unc_base: DEFAULT_UNC_BASE.to_owned(),
-                status: AppStatus::info("Select inputs, then click Run."),
+                unc_base: default_unc_base(),
+                status: None,
                 colors: load_colors(),
             },
             Command::none(),
@@ -156,9 +149,12 @@ impl Application for ImageProcessorApp {
 
     fn view(&self) -> Element<'_, Self::Message> {
         let label_color = Color::WHITE;
-        let status_color = self.status_color();
+        let instruction_text = text(INSTRUCTION_TEXT).style(Color::WHITE).size(16);
 
-        let status_text = text(&self.status.text).style(status_color).size(16);
+        let runtime_status_text = match self.status.as_ref() {
+            Some(status) => text(&status.text).style(self.status_color(status)).size(16),
+            None => text("").style(Color::WHITE).size(16),
+        };
 
         let image_folder_row = row![
             text("Image Folder")
@@ -205,11 +201,12 @@ impl Application for ImageProcessorApp {
         .spacing(8);
 
         let content = column![
-            status_text,
+            instruction_text,
             image_folder_row,
             output_folder_row,
             unc_row,
-            run_row
+            run_row,
+            runtime_status_text
         ]
         .spacing(10)
         .padding(24)
@@ -228,18 +225,17 @@ impl Application for ImageProcessorApp {
 }
 
 impl ImageProcessorApp {
-    fn status_color(&self) -> Color {
-        match self.status.level {
+    fn status_color(&self, status: &AppStatus) -> Color {
+        match status.level {
             StatusLevel::Error => self.colors.danger,
             StatusLevel::Warning => self.colors.warning,
             StatusLevel::Success => self.colors.success,
-            StatusLevel::Info => Color::WHITE,
         }
     }
 
     fn set_status(&mut self, status: AppStatus) {
         println!("{}", status.text);
-        self.status = status;
+        self.status = Some(status);
     }
 
     fn run_processing(&mut self) -> Result<AppStatus> {
@@ -272,7 +268,7 @@ impl ImageProcessorApp {
             anyhow::bail!("UNC base path cannot be blank");
         }
 
-        let image_rows = core::collect_image_rows(&image_folder, unc_base)?;
+        let image_collection = core::collect_image_rows(&image_folder, unc_base)?;
         let date = Local::now().date_naive();
         let output_target = csv_io::build_image_output_target(&output_folder, date);
 
@@ -285,7 +281,17 @@ impl ImageProcessorApp {
             }
         };
 
-        let rows_written = csv_io::write_image_csv(&output_path, &image_rows)?;
+        let rows_written = csv_io::write_image_csv(&output_path, &image_collection.image_rows)?;
+
+        if image_collection.secondary_only_sku_count > 0 {
+            let warning_details = image_collection.secondary_only_images.join(", ");
+            return Ok(AppStatus::warning(format!(
+                "Warning: {} SKU(s) have secondary images but no main product image: {}\n\nRows written: {rows_written}\nOutput: {}",
+                image_collection.secondary_only_sku_count,
+                warning_details,
+                output_path.display(),
+            )));
+        }
 
         Ok(AppStatus::success(format!(
             "Done.\n\nRows written: {rows_written}\nOutput: {}",
@@ -476,4 +482,9 @@ fn lighten(color: Color, amount: f32) -> Color {
 
 fn primary_button_style(color: Color) -> theme::Button {
     theme::Button::Custom(Box::new(PrimaryButtonStyle { color }))
+}
+
+fn default_unc_base() -> String {
+    let date_segment = Local::now().format("%-m_%-d_%y");
+    format!("{UNC_BASE_PREFIX}{date_segment}")
 }
