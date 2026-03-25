@@ -23,6 +23,7 @@ pub fn run() -> iced::Result {
 enum Message {
     ImageFolderChanged(String),
     OutputFolderChanged(String),
+    OutputFileNameChanged(String),
     UncBaseChanged(String),
     PickImageFolder,
     PickOutputFolder,
@@ -68,6 +69,7 @@ impl AppStatus {
 struct ImageProcessorApp {
     image_folder: String,
     output_folder: String,
+    output_file_name: String,
     unc_base: String,
     status: Option<AppStatus>,
     colors: AppColors,
@@ -94,6 +96,7 @@ impl Application for ImageProcessorApp {
             Self {
                 image_folder: String::new(),
                 output_folder: String::new(),
+                output_file_name: String::new(),
                 unc_base: default_unc_base(),
                 status: None,
                 colors: load_colors(),
@@ -123,6 +126,7 @@ impl Application for ImageProcessorApp {
         match message {
             Message::ImageFolderChanged(value) => self.image_folder = value,
             Message::OutputFolderChanged(value) => self.output_folder = value,
+            Message::OutputFileNameChanged(value) => self.output_file_name = value,
             Message::UncBaseChanged(value) => self.unc_base = value,
             Message::PickImageFolder => {
                 if let Some(path) = FileDialog::new().pick_folder() {
@@ -195,6 +199,20 @@ impl Application for ImageProcessorApp {
         .spacing(8)
         .align_items(Alignment::Center);
 
+        let output_file_row = row![
+            text("CSV Filename")
+                .width(Length::Fixed(130.0))
+                .style(label_color),
+            text_input(
+                "Leave blank for images_YYYYMMDD.csv",
+                &self.output_file_name
+            )
+            .on_input(Message::OutputFileNameChanged)
+            .width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_items(Alignment::Center);
+
         let run_row = row![button("Run")
             .style(primary_button_style(self.colors.primary))
             .on_press(Message::RunPressed)]
@@ -205,6 +223,7 @@ impl Application for ImageProcessorApp {
             image_folder_row,
             output_folder_row,
             unc_row,
+            output_file_row,
             run_row,
             runtime_status_text
         ]
@@ -270,7 +289,9 @@ impl ImageProcessorApp {
 
         let image_collection = core::collect_image_rows(&image_folder, unc_base)?;
         let date = Local::now().date_naive();
-        let output_target = csv_io::build_image_output_target(&output_folder, date);
+        let output_file_name = self.normalized_output_file_name()?;
+        let output_target =
+            csv_io::build_image_output_target(&output_folder, date, output_file_name.as_deref());
 
         let output_path = match self.resolve_output_path(&output_target.images_csv)? {
             Some(path) => path,
@@ -371,6 +392,24 @@ impl ImageProcessorApp {
             anyhow::bail!("{label} is required");
         }
         Ok(PathBuf::from(trimmed))
+    }
+
+    fn normalized_output_file_name(&self) -> Result<Option<String>> {
+        let trimmed = self.output_file_name.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        if trimmed.contains(['/', '\\']) {
+            anyhow::bail!("CSV filename must not include path separators");
+        }
+
+        let mut file_name = trimmed.to_owned();
+        if !file_name.to_ascii_lowercase().ends_with(".csv") {
+            file_name.push_str(".csv");
+        }
+
+        Ok(Some(file_name))
     }
 }
 
